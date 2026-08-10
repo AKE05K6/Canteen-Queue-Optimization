@@ -1,0 +1,99 @@
+import java.time.Instant;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+
+/**
+ * Core Backend Service managing canteen order creation and time-sensitive verification logic.
+ * Designed to prevent queue manipulation and manual ticket tampering.
+ */
+public class OrderVerificationService {
+
+    // Thread-safe in-memory cache simulating transactional database state parameters
+    private final ConcurrentHashMap<String, OrderTicket> orderCache = new ConcurrentHashMap<>();
+    
+    // Explicit safety constant enforcing the strict token lifespan window
+    private static final long EXPIRATION_WINDOW_SECONDS = 30;
+
+    /**
+     * Initializes a fresh food order using cinema-style slot reservation patterns.
+     * Generates a transient timestamp to validate transaction authenticity.
+     */
+    public OrderResponse createOrder() {
+        // Generate a concise, secure 8-character token identifier
+        String bookingId = UUID.randomUUID().toString().substring(0, 8).toUpperCase();
+        
+        OrderTicket newTicket = new OrderTicket(
+            bookingId,
+            Instant.now(), // High-precision server timestamp capturing generation instant
+            "PENDING_COLLECTION"
+        );
+
+        // Safely commit state parameter details directly to cache records
+        orderCache.put(bookingId, newTicket);
+
+        return new OrderResponse(bookingId, "Success", "Order entry initialized. QR open for 30s.");
+    }
+
+    /**
+     * Enforces rigid server-side data structure validations to block ticket alterations,
+     * duplicate item collections, and manual malpractice attempts.
+     */
+    public VerificationResult verifySecurityToken(String bookingId) {
+        // Fail-fast safeguard: Immediately terminate processing if token does not exist
+        if (!orderCache.containsKey(bookingId)) {
+            return new VerificationResult(false, "Invalid order token or reference ID.");
+        }
+
+        OrderTicket ticket = orderCache.get(bookingId);
+        Instant currentSystemTime = Instant.now();
+
+        // Safety Validation Check: Evaluate execution bounds against expiration constraints
+        long timeElapsedSeconds = currentSystemTime.getEpochSecond() - ticket.getCreatedAt().getEpochSecond();
+        
+        if (timeElapsedSeconds > EXPIRATION_WINDOW_SECONDS) {
+            ticket.setStatus("EXPIRED"); // Execute state machine mutation block
+            long delay = timeElapsedSeconds - EXPIRATION_WINDOW_SECONDS;
+            return new VerificationResult(false, "Token expired by " + delay + "s. Anti-tamper block triggered.");
+        }
+
+        // Check if ticket was already used to prevent double-dipping exploits
+        if ("COLLECTED".equals(ticket.getStatus())) {
+            return new VerificationResult(false, "Security Alert: This order token has already been claimed.");
+        }
+
+        // Transition order state safely to complete fulfillment cycle
+        ticket.setStatus("COLLECTED");
+        return new VerificationResult(true, "Token authenticated successfully! Food order authorized.");
+    }
+
+    // Inner Model Class representing the database entity structure
+    public static class OrderTicket {
+        private final String bookingId;
+        private final Instant createdAt;
+        private String status;
+
+        public OrderTicket(String bookingId, Instant createdAt, String status) {
+            this.bookingId = bookingId;
+            this.createdAt = createdAt;
+            this.status = status;
+        }
+
+        public Instant getCreatedAt() { return createdAt; }
+        public String getStatus() { return status; }
+        public void setStatus(String status) { this.status = status; }
+    }
+
+    // Class contracts mapping internal API exchange payloads
+    public static class OrderResponse {
+        public String bookingId;
+        public String status;
+        public String message;
+        public OrderResponse(String b, String s, String m) { this.bookingId = b; this.status = s; this.message = m; }
+    }
+
+    public static class VerificationResult {
+        public boolean verified;
+        public String responseMessage;
+        public VerificationResult(boolean v, String r) { this.verified = v; this.responseMessage = r; }
+    }
+}
